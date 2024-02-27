@@ -9,7 +9,10 @@ from huggingface_hub import hf_hub_download
 
 # print('#######s',os.path.join(__file__,'../'))
 
-sys.path.append(os.path.join(__file__,'../../'))
+# sys.path.append(os.path.join(__file__,'../../'))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
                 
 # from moondream import VisionEncoder, TextModel,detect_device
 # from transformers import TextIteratorStreamer
@@ -30,9 +33,6 @@ def pil2tensor(image):
 
 class MoondreamNode:
     def __init__(self):
-        self.device = torch.device("cpu")
-        self.dtype = torch.float32
-
         # get_torch_device()
         self.moondream = None
         self.tokenizer = None
@@ -46,11 +46,9 @@ class MoondreamNode:
                             "default": '',
                             "dynamicPrompts": False
                           }),
-            "device": (["cpu","cuda"],),
+            "moondream_model": ("MOONDREAM_MODEL",),
                              },
-
-            
-                }
+                } 
     
     RETURN_TYPES = ("STRING",)
 
@@ -61,65 +59,71 @@ class MoondreamNode:
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)
   
-    def run(self,image,question,device):
-      
-        result=[]
+    def run(self, image, question, moondream_model):
+        result = []
+        self.moondream = moondream_model[0][0]
+        self.tokenizer = moondream_model[0][1]
 
-        if device[0]!=self.device.type and device[0]=='cpu':
-            self.device=torch.device(device[0])
-            self.dtype = torch.float32
-            self.moondream =None
-        elif device[0]!=self.device.type:
-            device, dtype = detect_device()
-            self.device=device
-            self.dtype =dtype
-            self.moondream =None
-
-        if self.moondream ==None:
-            model_path=os.path.join(__file__,'../../checkpoints')
-            
-            if os.path.exists(model_path)==False:
-                os.mkdir(model_path)
-            if os.path.exists(model_path):
-
-                config_json=os.path.join(__file__,'../../checkpoints/config.json')
-                if os.path.exists(config_json)==False:
-                    hf_hub_download("vikhyatk/moondream1",
-                                                local_dir=model_path,
-                                                filename="config.json",
-                                                endpoint='https://hf-mirror.com')
-                
-                model_safetensors=os.path.join(__file__,'../../checkpoints/model.safetensors')
-                if os.path.exists(model_safetensors)==False:
-                    hf_hub_download("vikhyatk/moondream1",
-                                               local_dir=model_path,
-                                               filename="model.safetensors",
-                                               endpoint='https://hf-mirror.com')
-                
-                tokenizer_json=os.path.join(__file__,'../../checkpoints/tokenizer.json')
-                if os.path.exists(tokenizer_json)==False:
-                    hf_hub_download("vikhyatk/moondream1",
-                                               local_dir=model_path,
-                                               filename="tokenizer.json",
-                                               endpoint='https://hf-mirror.com')
-            
-            self.tokenizer = Tokenizer.from_pretrained(model_path)
-            self.moondream = Moondream.from_pretrained(model_path).to(device=self.device, dtype=self.dtype)
-            self.moondream.eval()
-
-         
-        question=question[0]
-
-        for i in range(len(image)):
-            im=image[i]
-            im=tensor2pil(im)
-
+        # Process each image with the provided question
+        question = question[0]  # Assuming single question for all images
+        for im in image:
+            im = tensor2pil(im)  # Convert tensor image to PIL for processing
             image_embeds = self.moondream.encode_image(im)
-            
-            # streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
-        
-            res=self.moondream.answer_question(image_embeds, question,self.tokenizer)
-
+            res = self.moondream.answer_question(image_embeds, question, self.tokenizer)
             result.append(res)
 
-        return (result,)
+        return (result,),
+
+class LoadMoondreamModel:
+    def __init__(self):
+        self.device = torch.device("cpu")
+        self.dtype = torch.float32
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "device": (["cpu","cuda"],),
+            },
+        }
+
+    RETURN_TYPES = ("MOONDREAM_MODEL",)
+    FUNCTION = "load_moondream_model"
+    CATEGORY = "♾️Mixlab/Prompt"
+
+    def load_moondream_model(self, device):
+        current_dir = os.path.dirname(os.path.realpath(__file__))
+        checkpoints_dir = os.path.join(current_dir, '..', 'checkpoints')
+
+        # Ensure the checkpoints directory exists
+        if not os.path.exists(checkpoints_dir):
+            os.makedirs(checkpoints_dir, exist_ok=True)
+
+        # Define the files to download
+        files_to_download = {
+            "config.json": "config.json",
+            "model.safetensors": "model.safetensors",
+            "tokenizer.json": "tokenizer.json",  # Add tokenizer here to avoid redundant code
+        }
+
+        # Download the files if they do not exist
+        for local_filename, hf_filename in files_to_download.items():
+            local_file_path = os.path.join(checkpoints_dir, local_filename)
+            if not os.path.exists(local_file_path):
+                hf_hub_download(
+                    repo_id="vikhyatk/moondream1",
+                    filename=hf_filename,
+                    local_dir=checkpoints_dir,
+                    endpoint='https://hf-mirror.com'
+                )
+
+        if device != self.device.type:
+            self.device = torch.device(device)
+        
+        # Load the Moondream model
+        moondream_model = Moondream.from_pretrained(checkpoints_dir).to(device=self.device, dtype=self.dtype)
+        moondream_model.eval()  # Set the model to evaluation mode
+        
+        # Load the tokenizer
+        tokenizer = Tokenizer.from_pretrained(checkpoints_dir)
+
+        return ((moondream_model,tokenizer),)
